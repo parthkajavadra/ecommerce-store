@@ -5,9 +5,13 @@ from app.auth import get_current_user
 from app import models, schemas
 from fastapi import APIRouter
 from typing import List
+from app.utils import generate_invoice_pdf
+from app.email import send_invoice_email
+from app.schemas import Order, OrderItem
+from app.models import Order as OrderModel, OrderItem as OrderItemModel
 
 
-router = APIRouter()
+router = APIRouter(prefix="/orders", tags=["Orders"])
 
 @router.post("/orders")
 def create_order(
@@ -115,3 +119,60 @@ def update_order_status(order_id: int, status_update: schemas.OrderStatusUpdate,
     db.refresh(order)
 
     return { "message": "Order status updated successfully" }
+
+@router.put("/update_status/{order_id}")
+def update_order_status(
+    order_id: int, status: str, 
+    tracking_number: str = None, 
+    shipping_carrier: str = None, 
+    db: Session = Depends(get_db), 
+    user: models.User = Depends(get_current_user)
+):
+    """Update the status and tracking information for an order"""
+    order = db.query(models.Order).filter(models.Order.id == order_id).first()
+
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    # Update order status
+    order.status = status
+    if tracking_number:
+        order.tracking_number = tracking_number
+    if shipping_carrier:
+        order.shipping_carrier = shipping_carrier
+
+    db.commit()
+    db.refresh(order)
+    return {"msg": "Order status updated successfully", "order": order}
+
+@router.get("/{order_id}", response_model=schemas.OrderResponse)
+def get_order_status(order_id: int, db: Session = Depends(get_db)):
+    """Get order status and tracking information"""
+    order = db.query(models.Order).filter(models.Order.id == order_id).first()
+
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    return order
+
+
+@router.post("/generate_invoice/{order_id}", response_model=Order)
+def generate_invoice(order_id: int, db: Session = Depends(get_db)):
+    order = db.query(OrderModel).filter(OrderModel.id == order_id).first()
+    
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    order_items = db.query(OrderItemModel).filter(OrderItemModel.order_id == order.id).all()
+    pdf_invoice = generate_invoice_pdf(order, order_items)  # Pass both order and order_items
+
+    # Assuming you save the generated PDF or return it as part of the response
+    # For example, you can store the PDF in the database or return it as a base64 string.
+
+    # Return the order data along with its items
+    return {
+        "id": order.id,
+        "customer_name": order.customer_name,
+        "shipping_address": order.shipping_address,
+        "total_amount": order.total_price,
+        "items": [{"product_name": item.product_name, "quantity": item.quantity, "price": item.price} for item in order_items]
+    }
